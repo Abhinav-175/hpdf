@@ -12,12 +12,11 @@ import itertools
 import time
 import re
 
-# external libs
 import fitz
 
 
 gemini_pro_sys_prompt = """\
-Analyze the following document text. Identify and return only the **exact** sentences or paragraphs that represent the core thesis or most critical findings. Do not paraphrase or add any introductory text. Output atleast 25 line extracts.\n\n\
+Analyze the following document text. Identify and return only the **exact** sentences or paragraphs that represent the core thesis or most critical findings and technical details like appendix. Do not paraphrase or add any introductory text. Output atleast 25 line extracts.\n\n\
 """
 
 
@@ -41,7 +40,6 @@ def gemini_api_call(sys_prompt, pdf_text_concat):
     print("Calling Gemini to process document....")
     response = requests.post(url, headers=headers, data=json.dumps(data))
 
-    # response clean-up
     try:
         response_json = response.json()
         extracted_text = response_json.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text")
@@ -50,18 +48,24 @@ def gemini_api_call(sys_prompt, pdf_text_concat):
             return extracted_text
         else:
             print("Could not extract text from response.")
+            return ""
     
     except requests.exceptions.JSONDecodeError:
         print("Error: Response is not valid JSON.")
+        return ""
     except IndexError:
         print("Error: List index out of range in response.")
+        return ""
 
 
 def resp_split(extracted_text):
     output_strings = []
+    if not extracted_text:
+        return output_strings
+        
     response_split = re.split(r"[^\(\)\ﬁ\,\-a-zA-Z0-9\s]+", extracted_text)
     for i in response_split:
-        if len(i)>15:       # to drop unexpected splits
+        if len(i)>15:
             output_strings.append(i)
     
     return output_strings
@@ -74,13 +78,25 @@ def process_pdf(pdf_path):
 
     doc = fitz.open(pdf_path)
     pages = [i for i in doc]
-    pages_text = []
     
     print("Processing document")
-    for page in pages: pages_text.append(page.get_text())
+    
+    all_search_terms = []
+    chunk_size = 5
+    
+    for i in range(0, len(pages), chunk_size):
+        page_chunk = pages[i:i + chunk_size]
+        pages_text_chunk = []
+        for page in page_chunk:
+            pages_text_chunk.append(page.get_text())
+        
+        print(f"Processing pages {i+1} to {min(i + chunk_size, len(pages))}...")
+        
+        api_result = gemini_api_call(gemini_pro_sys_prompt, ''.join(pages_text_chunk))
+        chunk_search_terms = resp_split(api_result)
+        all_search_terms.extend(chunk_search_terms)
 
-    # main api call
-    search_terms = resp_split(gemini_api_call(gemini_pro_sys_prompt, ''.join(pages_text)))
+    search_terms = list(dict.fromkeys(all_search_terms))
 
     for page in pages:
         for term in search_terms:
